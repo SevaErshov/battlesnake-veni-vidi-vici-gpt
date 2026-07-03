@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from src.moves import apply_move, DIRECTIONS
+from src.safety import safe_moves
 from src.state import GameState, Point, SnakeState
-from src.simulator import simulate_turn
 
 
 @dataclass(frozen=True)
@@ -73,19 +73,7 @@ class FeatureBuilder:
         return count
 
     def _count_safe_moves(self, snake_id: str) -> int:
-        snake = self._snake(snake_id)
-        safe = 0
-        occupied = {segment for s in self.state.snakes for segment in s.body}
-        for move in DIRECTIONS:
-            nxt = apply_move(snake.head, move)
-            if not (0 <= nxt[0] < self.state.width and 0 <= nxt[1] < self.state.height):
-                continue
-            if nxt in occupied:
-                continue
-            if nxt in self.state.hazards and snake.health <= self.state.hazard_damage:
-                continue
-            safe += 1
-        return safe
+        return len(safe_moves(self.state, snake_id))
 
     def _count_safe_moves_after_move(self, snake_id: str, move: str) -> int:
         snake = self._snake(snake_id)

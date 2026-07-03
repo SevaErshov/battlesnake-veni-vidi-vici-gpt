@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import List
 
 from src.moves import DIRECTIONS, apply_move
-from src.state import GameState, Point, SnakeState
+from src.state import GameState, SnakeState
 
 
-def legal_moves(state: GameState) -> List[str]:
-    head = state.our_snake.head
+def legal_moves(state: GameState, snake_id: str) -> List[str]:
+    snake = _snake_by_id(state, snake_id)
+    head = snake.head
     occupied = {segment for snake in state.snakes for segment in snake.body}
     legal: List[str] = []
     for move, (dx, dy) in DIRECTIONS.items():
@@ -17,21 +18,49 @@ def legal_moves(state: GameState) -> List[str]:
     return legal
 
 
-def safe_moves(state: GameState) -> List[str]:
-    moves = legal_moves(state)
-    if not moves:
-        return []
+def safe_moves(state: GameState, snake_id: str) -> List[str]:
+    snake = _snake_by_id(state, snake_id)
     safe: List[str] = []
-    body_cells = {segment for snake in state.snakes for segment in snake.body}
-    tail = state.our_snake.body[-1]
-    for move in moves:
-        nxt = apply_move(state.our_snake.head, move)
-        if nxt in state.hazards and state.our_snake.health <= state.hazard_damage:
+    occupied = {segment for other in state.snakes for segment in other.body}
+    own_tail = snake.body[-1]
+    for move in DIRECTIONS:
+        nxt = apply_move(snake.head, move)
+        ate = nxt in state.food
+        if not _in_bounds(nxt, state.width, state.height):
             continue
-        if nxt == tail:
-            safe.append(move)
+        health_after = snake.health - 1
+        if nxt in state.hazards:
+            health_after -= state.hazard_damage
+        if health_after <= 0 and not ate:
             continue
-        if any(nxt == other.head and other.length >= state.our_snake.length for other in state.snakes if other.id != state.our_snake_id):
+        if nxt in occupied:
+            if nxt == own_tail and not ate:
+                safe.append(move)
+            continue
+        if _risks_head_to_head(state, snake, nxt):
             continue
         safe.append(move)
     return safe
+
+
+def _snake_by_id(state: GameState, snake_id: str) -> SnakeState:
+    for snake in state.snakes:
+        if snake.id == snake_id and snake.alive:
+            return snake
+    raise ValueError(f"Snake {snake_id} not found")
+
+
+def _risks_head_to_head(state: GameState, snake: SnakeState, point: tuple[int, int]) -> bool:
+    for other in state.snakes:
+        if other.id == snake.id or not other.alive:
+            continue
+        if other.length < snake.length:
+            continue
+        for move in DIRECTIONS:
+            if apply_move(other.head, move) == point:
+                return True
+    return False
+
+
+def _in_bounds(point: tuple[int, int], width: int, height: int) -> bool:
+    return 0 <= point[0] < width and 0 <= point[1] < height
