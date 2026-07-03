@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: battlesnake-hardml-svm
+    name: battlesnake-hardml-expert
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn backend:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 30
     envVars:
       - key: BATTLE_MODEL
-        value: svm
+        value: expert
