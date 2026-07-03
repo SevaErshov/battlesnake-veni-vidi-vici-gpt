@@ -85,11 +85,11 @@ def choose_move(game_state: Dict) -> str:
                     "move": baseline,
                 }
             )
-            return baseline
+            return _finalize_move(game_state, baseline)
 
         deadline = _search_deadline(game_state, started_at)
         move, stats = _search_best_move(game_state, baseline, deadline)
-        move = _valid_direction(move, baseline)
+        move = _finalize_move(game_state, move, baseline)
         stats["move"] = move
         stats["fallback_used"] = stats.get("completed_depth", 0) == 0
         _record_search_stats(stats)
@@ -104,7 +104,7 @@ def choose_move(game_state: Dict) -> str:
                 "move": baseline,
             }
         )
-        return baseline
+        return _finalize_move(game_state, baseline)
     except Exception:  # noqa: BLE001 - search must never break the API response
         log.debug("Battlesnake search failed; using baseline move", exc_info=True)
         _record_search_stats(
@@ -116,7 +116,7 @@ def choose_move(game_state: Dict) -> str:
                 "move": baseline,
             }
         )
-        return baseline
+        return _finalize_move(game_state, baseline)
 
 
 def _choose_move_baseline(game_state: Dict) -> str:
@@ -127,8 +127,8 @@ def _choose_move_baseline(game_state: Dict) -> str:
         except Exception:  # noqa: BLE001 - baseline must stay fail-safe
             continue
         if move in DIRECTIONS:
-            return move
-    return DEFAULT_MOVE
+            return _finalize_move(game_state, move)
+    return _finalize_move(game_state, DEFAULT_MOVE)
 
 
 def choose_move_heuristic(game_state: Dict) -> str:
@@ -460,6 +460,40 @@ def _valid_direction(move: Optional[str], fallback: str = DEFAULT_MOVE) -> str:
     return DEFAULT_MOVE
 
 
+def _in_bounds_moves(game_state: Dict) -> List[str]:
+    """Directions that keep our next head inside the board, ignoring bodies."""
+    try:
+        board = game_state["board"]
+        width, height = board["width"], board["height"]
+        head = (game_state["you"]["head"]["x"], game_state["you"]["head"]["y"])
+    except Exception:  # noqa: BLE001 - malformed states fall back to DEFAULT_MOVE
+        return []
+    return [
+        move
+        for move, (dx, dy) in DIRECTIONS.items()
+        if _in_bounds((head[0] + dx, head[1] + dy), width, height)
+    ]
+
+
+def _finalize_move(game_state: Dict, move: Optional[str], fallback: str = DEFAULT_MOVE) -> str:
+    """Return a valid direction, avoiding out-of-bounds moves whenever possible."""
+    in_bounds = _in_bounds_moves(game_state)
+    if move in in_bounds:
+        return move
+    if fallback in in_bounds:
+        return fallback
+    legal = []
+    try:
+        legal = _legal_moves(game_state)
+    except Exception:  # noqa: BLE001 - final safety must not raise
+        legal = []
+    if legal:
+        return legal[0]
+    if in_bounds:
+        return in_bounds[0]
+    return _valid_direction(move, fallback)
+
+
 def _supports_search_rules(game_state: Dict) -> bool:
     """Return whether the lightweight simulator matches this request's rules."""
     try:
@@ -665,6 +699,12 @@ def _ordered_moves_for_snake(
     return sorted(records, key=lambda item: (item["rank"], -item["model_score"], item["direction_index"]))
 
 
+def _playable_records(records: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Drop out-of-bounds moves when the snake has any in-bounds alternative."""
+    in_bounds = [record for record in records if record["classification"] != "impossible"]
+    return in_bounds or records
+
+
 def _simulate_turn(state: Dict[str, object], moves: Dict[str, str]) -> Dict[str, object]:
     """Simulate one supported Standard turn without mutating the input state."""
     moved: List[Tuple[str, Tuple[Point, ...], int]] = []
@@ -770,18 +810,19 @@ def _select_relevant_opponents(state: Dict[str, object], our_move: str, depth: i
 
 
 def _predict_move_for_snake(state: Dict[str, object], snake_id: str) -> str:
-    for record in _ordered_moves_for_snake(state, snake_id):
+    records = _playable_records(_ordered_moves_for_snake(state, snake_id))
+    for record in records:
         if record["classification"] == "survivable":
             return record["move"]
-    for record in _ordered_moves_for_snake(state, snake_id):
+    for record in records:
         if record["classification"] == "dangerous":
             return record["move"]
-    return _ordered_moves_for_snake(state, snake_id)[0]["move"]
+    return records[0]["move"]
 
 
 def _search_best_move(game_state: Dict, baseline: str, deadline: float) -> Tuple[str, Dict[str, object]]:
     state = _build_search_state(game_state)
-    root_moves = _ordered_moves_for_snake(state, state["you_id"], baseline=baseline)
+    root_moves = _playable_records(_ordered_moves_for_snake(state, state["you_id"], baseline=baseline))
     cache: Dict[Tuple[object, ...], float] = {}
     stats: Dict[str, object] = {
         "completed_depth": 0,
@@ -837,7 +878,7 @@ def _move_value(
     you_id = state["you_id"]
     selected = _select_relevant_opponents(state, our_move, depth)
     option_lists = [
-        [record["move"] for record in _ordered_moves_for_snake(state, enemy_id)]
+        [record["move"] for record in _playable_records(_ordered_moves_for_snake(state, enemy_id))]
         for enemy_id in selected
     ]
     worst = float("inf")
@@ -888,7 +929,7 @@ def _search_value(
 
     stats["expanded_states"] = int(stats.get("expanded_states", 0)) + 1
     best = float("-inf")
-    for record in _ordered_moves_for_snake(state, state["you_id"]):
+    for record in _playable_records(_ordered_moves_for_snake(state, state["you_id"])):
         value = _move_value(state, record["move"], depth, deadline, cache, stats, alpha)
         best = max(best, value)
         alpha = max(alpha, best)
