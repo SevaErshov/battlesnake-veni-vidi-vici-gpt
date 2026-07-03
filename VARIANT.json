@@ -1,0 +1,14 @@
+{
+  "model": "svm",
+  "label": "SVM",
+  "branch": "feature/hardml-svm",
+  "render_service_name": "battlesnake-hardml-svm",
+  "default_env": {
+    "BATTLE_MODEL": "svm"
+  },
+  "appearance": {
+    "color": "#7C3AED",
+    "head": "evil",
+    "tail": "bolt"
+  }
+}

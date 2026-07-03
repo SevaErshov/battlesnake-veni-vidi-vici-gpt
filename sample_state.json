@@ -1,0 +1,16 @@
+{
+  "game": {"id": "sample", "ruleset": {"name": "standard", "settings": {}}, "timeout": 500},
+  "turn": 37,
+  "board": {
+    "height": 11,
+    "width": 11,
+    "food": [{"x": 1, "y": 8}, {"x": 8, "y": 6}, {"x": 5, "y": 5}],
+    "hazards": [],
+    "snakes": [
+      {"id": "you", "name": "you", "health": 42, "body": [{"x": 3, "y": 5}, {"x": 3, "y": 4}, {"x": 3, "y": 3}, {"x": 2, "y": 3}, {"x": 1, "y": 3}], "head": {"x": 3, "y": 5}, "length": 5},
+      {"id": "small", "name": "small", "health": 70, "body": [{"x": 6, "y": 5}, {"x": 6, "y": 4}, {"x": 7, "y": 4}], "head": {"x": 6, "y": 5}, "length": 3},
+      {"id": "big", "name": "big", "health": 80, "body": [{"x": 8, "y": 8}, {"x": 8, "y": 9}, {"x": 7, "y": 9}, {"x": 6, "y": 9}, {"x": 5, "y": 9}], "head": {"x": 8, "y": 8}, "length": 5}
+    ]
+  },
+  "you": {"id": "you", "name": "you", "health": 42, "body": [{"x": 3, "y": 5}, {"x": 3, "y": 4}, {"x": 3, "y": 3}, {"x": 2, "y": 3}, {"x": 1, "y": 3}], "head": {"x": 3, "y": 5}, "length": 5}
+}

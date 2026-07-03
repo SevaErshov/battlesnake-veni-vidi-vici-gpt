@@ -1,9 +1,7 @@
+.venv/
 __pycache__/
 *.pyc
-.venv/
-venv/
 .env
 .DS_Store
-
-# Local Battlesnake CLI output
-logs/
+training/data/*.csv
+training/data/*.parquet

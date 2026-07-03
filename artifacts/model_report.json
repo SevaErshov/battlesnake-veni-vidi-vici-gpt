@@ -1,0 +1,65 @@
+{
+  "states_generated": 9000,
+  "candidate_rows": 22165,
+  "features": [
+    "health_norm",
+    "my_len_norm",
+    "enemy_count_norm",
+    "len_advantage_norm",
+    "is_health_crisis",
+    "is_hungry",
+    "is_endgame",
+    "is_predator",
+    "move_up",
+    "move_down",
+    "move_left",
+    "move_right",
+    "candidate_is_food",
+    "dist_food_norm",
+    "food_race_adv_norm",
+    "open_area_norm",
+    "open_area_vs_len",
+    "exit_count_norm",
+    "second_step_norm",
+    "reaches_tail",
+    "tail_dist_norm",
+    "h2h_risk",
+    "h2h_kill",
+    "near_big_head_inv",
+    "near_small_head_inv",
+    "wall_dist_norm",
+    "center_closeness",
+    "trap_flag",
+    "thin_corridor",
+    "prey_dist_norm",
+    "prey_options_reduced_norm",
+    "hazard_flag"
+  ],
+  "seed": 17,
+  "ridge": {
+    "top1_acc": 0.5626666666666666,
+    "mse": 15.418293981922396
+  },
+  "logistic": {
+    "top1_acc": 0.68,
+    "row_accuracy": 0.6871943488498461,
+    "row_auc": 0.7540716736302184
+  },
+  "svm": {
+    "top1_acc": 0.7875555555555556,
+    "row_accuracy": 0.6842963231298678,
+    "row_auc": 0.7377440809810116
+  },
+  "perceptron": {
+    "top1_acc": 0.5808888888888889,
+    "row_accuracy": 0.5904727404455714,
+    "row_auc": 0.62251802031319
+  },
+  "mlp": {
+    "top1_acc": 0.7755555555555556,
+    "mse": 0.5357654996864498
+  },
+  "ensemble": {
+    "top1_acc": 0.732
+  }
+}
