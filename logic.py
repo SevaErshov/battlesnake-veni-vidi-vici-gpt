@@ -13,10 +13,14 @@ Board coordinates: ``(0, 0)`` is the bottom-left corner.
 Game-state schema reference: https://docs.battlesnake.com/api
 """
 
+import logging
+import time
 from collections import deque
+from itertools import product
 from typing import Dict, List, Optional, Set, Tuple
 
 Point = Tuple[int, int]
+SnakeState = Tuple[str, Tuple[Point, ...], int]
 
 DIRECTIONS: Dict[str, Point] = {
     "up": (0, 1),
@@ -24,11 +28,24 @@ DIRECTIONS: Dict[str, Point] = {
     "left": (-1, 0),
     "right": (1, 0),
 }
+VALID_MOVES: Tuple[str, ...] = tuple(DIRECTIONS.keys())
+DEFAULT_MOVE = VALID_MOVES[0]
 
 # Penalty applied to a move that could lose a head-to-head collision.
 HEAD_TO_HEAD_PENALTY = 10_000
 # Below this health we start actively steering toward food.
 HUNGRY_THRESHOLD = 50
+
+MAX_SEARCH_DEPTH = 4
+SEARCH_MAX_BUDGET_SECONDS = 0.35
+SEARCH_TIMEOUT_RESERVE_SECONDS = 0.15
+SEARCH_TIMEOUT_FRACTION = 0.65
+STANDARD_FOOD_HEALTH = 100
+WIN_SCORE = 1_000_000.0
+LOSS_SCORE = -1_000_000.0
+
+log = logging.getLogger("battlesnake.logic")
+LAST_SEARCH_STATS: Dict[str, object] = {}
 
 
 def get_info() -> Dict[str, str]:
@@ -44,14 +61,74 @@ def get_info() -> Dict[str, str]:
 
 
 def choose_move(game_state: Dict) -> str:
-    """Return the next move using the model, with a heuristic fallback."""
+    """Return the next move using a baseline-first tactical search."""
+    started_at = time.perf_counter()
+    baseline = _choose_move_baseline(game_state)
+    _record_search_stats(
+        {
+            "completed_depth": 0,
+            "expanded_states": 0,
+            "fallback_used": True,
+            "reason": "baseline",
+            "move": baseline,
+        }
+    )
+
     try:
-        move = choose_move_model(game_state)
-    except Exception:  # noqa: BLE001 - a model issue must never break gameplay
-        move = None
-    if move is not None:
+        if not _supports_search_rules(game_state):
+            _record_search_stats(
+                {
+                    "completed_depth": 0,
+                    "expanded_states": 0,
+                    "fallback_used": True,
+                    "reason": "unsupported_ruleset",
+                    "move": baseline,
+                }
+            )
+            return baseline
+
+        deadline = _search_deadline(game_state, started_at)
+        move, stats = _search_best_move(game_state, baseline, deadline)
+        move = _valid_direction(move, baseline)
+        stats["move"] = move
+        stats["fallback_used"] = stats.get("completed_depth", 0) == 0
+        _record_search_stats(stats)
         return move
-    return choose_move_heuristic(game_state)
+    except _SearchTimeout:
+        _record_search_stats(
+            {
+                "completed_depth": 0,
+                "expanded_states": 0,
+                "fallback_used": True,
+                "reason": "timeout",
+                "move": baseline,
+            }
+        )
+        return baseline
+    except Exception:  # noqa: BLE001 - search must never break the API response
+        log.debug("Battlesnake search failed; using baseline move", exc_info=True)
+        _record_search_stats(
+            {
+                "completed_depth": 0,
+                "expanded_states": 0,
+                "fallback_used": True,
+                "reason": "search_exception",
+                "move": baseline,
+            }
+        )
+        return baseline
+
+
+def _choose_move_baseline(game_state: Dict) -> str:
+    """Return the existing model/heuristic choice, always as a valid direction."""
+    for chooser in (choose_move_model, choose_move_heuristic):
+        try:
+            move = chooser(game_state)
+        except Exception:  # noqa: BLE001 - baseline must stay fail-safe
+            continue
+        if move in DIRECTIONS:
+            return move
+    return DEFAULT_MOVE
 
 
 def choose_move_heuristic(game_state: Dict) -> str:
@@ -328,22 +405,26 @@ def choose_move_model(game_state: Dict) -> Optional[str]:
     if not legal:
         return None
 
+    best_move, best_score = None, float("-inf")
+    for move in legal:
+        score = _model_score_for_move(game_state, move)
+        if score > best_score:
+            best_score, best_move = score, move
+    return best_move
+
+
+def _model_score_for_move(game_state: Dict, move: str) -> float:
+    """Return the embedded linear model score for one candidate move."""
     names = _MODEL["feature_names"]
     mean = _MODEL["mean"]
     std = _MODEL["std"]
     coef = _MODEL["coef"]
-    intercept = _MODEL["intercept"]
-
-    best_move, best_score = None, float("-inf")
-    for move in legal:
-        feats = _candidate_features(game_state, move)
-        score = intercept
-        for i, name in enumerate(names):
-            z = (feats.get(name, 0.0) - mean[i]) / std[i] if std[i] else 0.0
-            score += coef[i] * z
-        if score > best_score:
-            best_score, best_move = score, move
-    return best_move
+    score = float(_MODEL["intercept"])
+    feats = _candidate_features(game_state, move)
+    for i, name in enumerate(names):
+        z = (feats.get(name, 0.0) - mean[i]) / std[i] if std[i] else 0.0
+        score += coef[i] * z
+    return score
 
 
 def _legal_moves(game_state: Dict) -> List[str]:
@@ -357,3 +438,602 @@ def _legal_moves(game_state: Dict) -> List[str]:
         if _in_bounds((head[0] + dx, head[1] + dy), width, height)
         and (head[0] + dx, head[1] + dy) not in occupied
     ]
+
+
+# --- Deadline-aware tactical search -----------------------------------------
+
+
+class _SearchTimeout(Exception):
+    """Raised when the request-local search budget is exhausted."""
+
+
+def _record_search_stats(stats: Dict[str, object]) -> None:
+    LAST_SEARCH_STATS.clear()
+    LAST_SEARCH_STATS.update(stats)
+
+
+def _valid_direction(move: Optional[str], fallback: str = DEFAULT_MOVE) -> str:
+    if move in DIRECTIONS:
+        return move
+    if fallback in DIRECTIONS:
+        return fallback
+    return DEFAULT_MOVE
+
+
+def _supports_search_rules(game_state: Dict) -> bool:
+    """Return whether the lightweight simulator matches this request's rules."""
+    try:
+        board = game_state["board"]
+        if board.get("hazards"):
+            return False
+        ruleset = (game_state.get("game") or {}).get("ruleset") or {}
+        name = str(ruleset.get("name", "standard")).lower()
+        return name in {"", "standard", "solo"}
+    except Exception:
+        return False
+
+
+def _search_deadline(game_state: Dict, started_at: float) -> float:
+    timeout_ms = ((game_state.get("game") or {}).get("timeout") or 500)
+    try:
+        timeout_seconds = max(float(timeout_ms) / 1000.0, 0.02)
+    except (TypeError, ValueError):
+        timeout_seconds = 0.5
+    budget = min(
+        SEARCH_MAX_BUDGET_SECONDS,
+        max(0.015, timeout_seconds * SEARCH_TIMEOUT_FRACTION),
+        max(0.015, timeout_seconds - SEARCH_TIMEOUT_RESERVE_SECONDS),
+    )
+    return started_at + budget
+
+
+def _check_deadline(deadline: float) -> None:
+    if time.perf_counter() >= deadline:
+        raise _SearchTimeout
+
+
+def _snake_id(snake: SnakeState) -> str:
+    return snake[0]
+
+
+def _snake_body(snake: SnakeState) -> Tuple[Point, ...]:
+    return snake[1]
+
+
+def _snake_health(snake: SnakeState) -> int:
+    return snake[2]
+
+
+def _build_search_state(game_state: Dict) -> Dict[str, object]:
+    board = game_state["board"]
+    you_id = game_state["you"]["id"]
+    snakes: List[SnakeState] = []
+    for snake in board["snakes"]:
+        body = tuple((seg["x"], seg["y"]) for seg in snake["body"])
+        if not body:
+            continue
+        default_health = game_state["you"].get("health", STANDARD_FOOD_HEALTH) if snake["id"] == you_id else STANDARD_FOOD_HEALTH
+        snakes.append((snake["id"], body, int(snake.get("health", default_health))))
+    if not any(_snake_id(snake) == you_id for snake in snakes):
+        raise ValueError("search state does not contain our snake")
+    food = frozenset((f["x"], f["y"]) for f in board.get("food", []))
+    return {
+        "width": int(board["width"]),
+        "height": int(board["height"]),
+        "food": food,
+        "snakes": tuple(snakes),
+        "you_id": you_id,
+        "had_opponents": any(_snake_id(snake) != you_id for snake in snakes),
+    }
+
+
+def _state_to_game_state(state: Dict[str, object], perspective_id: Optional[str] = None) -> Dict:
+    snakes_json = []
+    you_json = None
+    for sid, body, health in state["snakes"]:
+        head = body[0]
+        snake_json = {
+            "id": sid,
+            "name": sid,
+            "health": health,
+            "body": [{"x": x, "y": y} for x, y in body],
+            "head": {"x": head[0], "y": head[1]},
+            "length": len(body),
+            "latency": "0",
+            "shout": "",
+        }
+        snakes_json.append(snake_json)
+        if sid == (perspective_id or state["you_id"]):
+            you_json = snake_json
+    if you_json is None:
+        you_json = snakes_json[0]
+    return {
+        "game": {"id": "search", "ruleset": {"name": "standard"}, "timeout": 500},
+        "turn": 0,
+        "board": {
+            "height": state["height"],
+            "width": state["width"],
+            "food": [{"x": x, "y": y} for x, y in sorted(state["food"])],
+            "hazards": [],
+            "snakes": snakes_json,
+        },
+        "you": you_json,
+    }
+
+
+def _living_snake(state: Dict[str, object], snake_id: str) -> Optional[SnakeState]:
+    for snake in state["snakes"]:
+        if _snake_id(snake) == snake_id:
+            return snake
+    return None
+
+
+def _enemy_snakes(state: Dict[str, object]) -> List[SnakeState]:
+    you_id = state["you_id"]
+    return [snake for snake in state["snakes"] if _snake_id(snake) != you_id]
+
+
+def _move_point(point: Point, move: str) -> Point:
+    dx, dy = DIRECTIONS[_valid_direction(move)]
+    return point[0] + dx, point[1] + dy
+
+
+def _body_cells_after_tail_release(state: Dict[str, object]) -> Set[Point]:
+    occupied: Set[Point] = set()
+    for snake in state["snakes"]:
+        for point in _snake_body(snake)[:-1]:
+            occupied.add(point)
+    return occupied
+
+
+def _head_contest_danger(state: Dict[str, object], snake_id: str, dest: Point) -> bool:
+    snake = _living_snake(state, snake_id)
+    if snake is None:
+        return False
+    my_length = len(_snake_body(snake)) + (1 if dest in state["food"] else 0)
+    for enemy in state["snakes"]:
+        if _snake_id(enemy) == snake_id:
+            continue
+        enemy_head = _snake_body(enemy)[0]
+        if _manhattan(enemy_head, dest) != 1:
+            continue
+        enemy_length = len(_snake_body(enemy)) + (1 if dest in state["food"] else 0)
+        if enemy_length >= my_length:
+            return True
+    return False
+
+
+def _classify_move_for_snake(state: Dict[str, object], snake_id: str, move: str) -> str:
+    snake = _living_snake(state, snake_id)
+    if snake is None or move not in DIRECTIONS:
+        return "impossible"
+    body = _snake_body(snake)
+    nxt = _move_point(body[0], move)
+    if not _in_bounds(nxt, state["width"], state["height"]):
+        return "impossible"
+    if nxt in _body_cells_after_tail_release(state):
+        return "fatal_body"
+    if _snake_health(snake) <= 1 and nxt not in state["food"]:
+        return "fatal_starvation"
+    if _head_contest_danger(state, snake_id, nxt):
+        return "dangerous"
+    return "survivable"
+
+
+def _model_score_for_state_move(state: Dict[str, object], snake_id: str, move: str) -> float:
+    if move not in DIRECTIONS:
+        return -_BIG
+    snake = _living_snake(state, snake_id)
+    if snake is None:
+        return -_BIG
+    nxt = _move_point(_snake_body(snake)[0], move)
+    if not _in_bounds(nxt, state["width"], state["height"]):
+        return -_BIG
+    try:
+        return _model_score_for_move(_state_to_game_state(state, snake_id), move)
+    except Exception:  # noqa: BLE001 - ordering should remain best-effort
+        return 0.0
+
+
+def _ordered_moves_for_snake(
+    state: Dict[str, object],
+    snake_id: str,
+    baseline: Optional[str] = None,
+) -> List[Dict[str, object]]:
+    class_rank = {
+        "survivable": 0,
+        "dangerous": 1,
+        "fatal_starvation": 2,
+        "fatal_body": 3,
+        "impossible": 4,
+    }
+    records = []
+    for index, move in enumerate(VALID_MOVES):
+        classification = _classify_move_for_snake(state, snake_id, move)
+        model_score = _model_score_for_state_move(state, snake_id, move)
+        if move == baseline:
+            model_score += 0.001
+        records.append(
+            {
+                "move": move,
+                "classification": classification,
+                "model_score": model_score,
+                "direction_index": index,
+                "rank": class_rank[classification],
+            }
+        )
+    return sorted(records, key=lambda item: (item["rank"], -item["model_score"], item["direction_index"]))
+
+
+def _simulate_turn(state: Dict[str, object], moves: Dict[str, str]) -> Dict[str, object]:
+    """Simulate one supported Standard turn without mutating the input state."""
+    moved: List[Tuple[str, Tuple[Point, ...], int]] = []
+    food = set(state["food"])
+
+    for sid, body, health in state["snakes"]:
+        move = _valid_direction(moves.get(sid))
+        new_head = _move_point(body[0], move)
+        new_body = (new_head,) + body[:-1]
+        moved.append((sid, new_body, health - 1))
+
+    eaten: Set[Point] = set()
+    grown: List[Tuple[str, Tuple[Point, ...], int]] = []
+    for sid, body, health in moved:
+        if body[0] in food:
+            tail = body[-1]
+            body = body + (tail,)
+            health = STANDARD_FOOD_HEALTH
+            eaten.add(body[0])
+        grown.append((sid, body, health))
+    food.difference_update(eaten)
+
+    eliminated: Set[str] = set()
+    width, height = state["width"], state["height"]
+
+    for sid, body, health in grown:
+        head = body[0]
+        if health <= 0:
+            eliminated.add(sid)
+        if not _in_bounds(head, width, height):
+            eliminated.add(sid)
+        body_after_head_stack = body[1:]
+        while body_after_head_stack and body_after_head_stack[0] == head:
+            body_after_head_stack = body_after_head_stack[1:]
+        if head in body_after_head_stack:
+            eliminated.add(sid)
+
+    for sid, body, _health in grown:
+        head = body[0]
+        for other_sid, other_body, _other_health in grown:
+            if other_sid == sid:
+                continue
+            if head in other_body[1:]:
+                eliminated.add(sid)
+                break
+
+    heads: Dict[Point, List[Tuple[str, int]]] = {}
+    for sid, body, _health in grown:
+        heads.setdefault(body[0], []).append((sid, len(body)))
+    for contenders in heads.values():
+        if len(contenders) < 2:
+            continue
+        max_length = max(length for _sid, length in contenders)
+        max_count = sum(1 for _sid, length in contenders if length == max_length)
+        for sid, length in contenders:
+            if length < max_length or max_count > 1:
+                eliminated.add(sid)
+
+    survivors = tuple((sid, body, health) for sid, body, health in grown if sid not in eliminated)
+    return {
+        "width": width,
+        "height": height,
+        "food": frozenset(food),
+        "snakes": survivors,
+        "you_id": state["you_id"],
+        "had_opponents": state["had_opponents"],
+    }
+
+
+def _terminal_value(state: Dict[str, object], depth_remaining: int) -> Optional[float]:
+    you = _living_snake(state, state["you_id"])
+    if you is None:
+        return LOSS_SCORE - depth_remaining * 1000.0
+    if state["had_opponents"] and not _enemy_snakes(state):
+        return WIN_SCORE + depth_remaining * 1000.0
+    return None
+
+
+def _select_relevant_opponents(state: Dict[str, object], our_move: str, depth: int) -> List[str]:
+    you = _living_snake(state, state["you_id"])
+    if you is None:
+        return []
+    our_dest = _move_point(_snake_body(you)[0], our_move)
+    our_length = len(_snake_body(you)) + (1 if our_dest in state["food"] else 0)
+    scored = []
+    for enemy in _enemy_snakes(state):
+        enemy_id = _snake_id(enemy)
+        enemy_head = _snake_body(enemy)[0]
+        distance = _manhattan(enemy_head, our_dest)
+        can_contest = distance == 1
+        score = 100.0 - distance * 8.0
+        if can_contest:
+            score += 1000.0
+        if len(_snake_body(enemy)) >= our_length:
+            score += 40.0
+        for food in state["food"]:
+            if _manhattan(enemy_head, food) <= depth + 1 and _manhattan(_snake_body(you)[0], food) <= depth + 1:
+                score += 15.0
+                break
+        scored.append((0 if can_contest else 1, -score, enemy_id))
+    scored.sort()
+    return [enemy_id for _contest_rank, _score, enemy_id in scored[:2]]
+
+
+def _predict_move_for_snake(state: Dict[str, object], snake_id: str) -> str:
+    for record in _ordered_moves_for_snake(state, snake_id):
+        if record["classification"] == "survivable":
+            return record["move"]
+    for record in _ordered_moves_for_snake(state, snake_id):
+        if record["classification"] == "dangerous":
+            return record["move"]
+    return _ordered_moves_for_snake(state, snake_id)[0]["move"]
+
+
+def _search_best_move(game_state: Dict, baseline: str, deadline: float) -> Tuple[str, Dict[str, object]]:
+    state = _build_search_state(game_state)
+    root_moves = _ordered_moves_for_snake(state, state["you_id"], baseline=baseline)
+    cache: Dict[Tuple[object, ...], float] = {}
+    stats: Dict[str, object] = {
+        "completed_depth": 0,
+        "expanded_states": 0,
+        "fallback_used": True,
+        "reason": "no_completed_search",
+    }
+    completed_move: Optional[str] = None
+    completed_score = float("-inf")
+
+    for depth in range(1, MAX_SEARCH_DEPTH + 1):
+        try:
+            _check_deadline(deadline)
+            best_move = None
+            best_score = float("-inf")
+            best_model_score = float("-inf")
+            alpha = float("-inf")
+            for record in root_moves:
+                value = _move_value(state, record["move"], depth, deadline, cache, stats, alpha)
+                model_score = float(record["model_score"])
+                tie = (value, model_score, -int(record["direction_index"]))
+                best_tie = (best_score, best_model_score, -VALID_MOVES.index(best_move)) if best_move else None
+                if best_tie is None or tie > best_tie:
+                    best_move = record["move"]
+                    best_score = value
+                    best_model_score = model_score
+                alpha = max(alpha, best_score)
+            completed_move = best_move
+            completed_score = best_score
+            stats["completed_depth"] = depth
+            stats["best_score"] = completed_score
+            stats["reason"] = "completed"
+        except _SearchTimeout:
+            stats["timed_out"] = True
+            break
+
+    if completed_move is None:
+        return baseline, stats
+    stats["fallback_used"] = False
+    return completed_move, stats
+
+
+def _move_value(
+    state: Dict[str, object],
+    our_move: str,
+    depth: int,
+    deadline: float,
+    cache: Dict[Tuple[object, ...], float],
+    stats: Dict[str, object],
+    alpha: float,
+) -> float:
+    _check_deadline(deadline)
+    you_id = state["you_id"]
+    selected = _select_relevant_opponents(state, our_move, depth)
+    option_lists = [
+        [record["move"] for record in _ordered_moves_for_snake(state, enemy_id)]
+        for enemy_id in selected
+    ]
+    worst = float("inf")
+
+    for combo in product(*option_lists) if option_lists else [()]:
+        _check_deadline(deadline)
+        moves = {you_id: our_move}
+        for enemy_id, enemy_move in zip(selected, combo):
+            moves[enemy_id] = enemy_move
+        for enemy in _enemy_snakes(state):
+            enemy_id = _snake_id(enemy)
+            if enemy_id not in moves:
+                moves[enemy_id] = _predict_move_for_snake(state, enemy_id)
+        next_state = _simulate_turn(state, moves)
+        terminal = _terminal_value(next_state, depth - 1)
+        if terminal is not None:
+            value = terminal
+        elif depth <= 1:
+            value = _evaluate_leaf(next_state, deadline)
+        else:
+            value = _search_value(next_state, depth - 1, deadline, cache, stats, alpha, worst)
+        worst = min(worst, value)
+        if worst <= alpha:
+            break
+    return worst
+
+
+def _search_value(
+    state: Dict[str, object],
+    depth: int,
+    deadline: float,
+    cache: Dict[Tuple[object, ...], float],
+    stats: Dict[str, object],
+    alpha: float,
+    beta: float,
+) -> float:
+    _check_deadline(deadline)
+    terminal = _terminal_value(state, depth)
+    if terminal is not None:
+        return terminal
+    if depth <= 0:
+        return _evaluate_leaf(state, deadline)
+
+    key = _state_key(state, depth)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    stats["expanded_states"] = int(stats.get("expanded_states", 0)) + 1
+    best = float("-inf")
+    for record in _ordered_moves_for_snake(state, state["you_id"]):
+        value = _move_value(state, record["move"], depth, deadline, cache, stats, alpha)
+        best = max(best, value)
+        alpha = max(alpha, best)
+        if alpha >= beta:
+            break
+    cache[key] = best
+    return best
+
+
+def _state_key(state: Dict[str, object], depth: int) -> Tuple[object, ...]:
+    return (
+        state["width"],
+        state["height"],
+        state["you_id"],
+        depth,
+        tuple(sorted(state["food"])),
+        tuple((sid, body, health) for sid, body, health in state["snakes"]),
+    )
+
+
+def _release_times(state: Dict[str, object]) -> Dict[Point, int]:
+    release: Dict[Point, int] = {}
+    for _sid, body, _health in state["snakes"]:
+        length = len(body)
+        for index, point in enumerate(body):
+            turns = length - index
+            release[point] = max(release.get(point, 0), turns)
+    return release
+
+
+def _time_aware_dist(start: Point, state: Dict[str, object], deadline: float) -> Dict[Point, int]:
+    width, height = state["width"], state["height"]
+    release = _release_times(state)
+    dist = {start: 0}
+    dq = deque([start])
+    checks = 0
+    while dq:
+        point = dq.popleft()
+        d = dist[point]
+        checks += 1
+        if checks % 64 == 0:
+            _check_deadline(deadline)
+        for dx, dy in _NEIGHBORS:
+            nxt = (point[0] + dx, point[1] + dy)
+            if nxt in dist or not _in_bounds(nxt, width, height):
+                continue
+            arrival = d + 1
+            if release.get(nxt, 0) > arrival:
+                continue
+            dist[nxt] = arrival
+            dq.append(nxt)
+    return dist
+
+
+def _safe_exit_count(state: Dict[str, object], snake_id: str) -> int:
+    return sum(
+        1
+        for move in VALID_MOVES
+        if _classify_move_for_snake(state, snake_id, move) == "survivable"
+    )
+
+
+def _best_model_score_for_state(state: Dict[str, object]) -> float:
+    game_state = _state_to_game_state(state, state["you_id"])
+    try:
+        legal = _legal_moves(game_state)
+        if not legal:
+            return -1000.0
+        return max(_model_score_for_move(game_state, move) for move in legal)
+    except Exception:  # noqa: BLE001 - leaf evaluation remains heuristic if model features fail
+        return 0.0
+
+
+def _evaluate_leaf(state: Dict[str, object], deadline: float) -> float:
+    _check_deadline(deadline)
+    terminal = _terminal_value(state, 0)
+    if terminal is not None:
+        return terminal
+
+    you = _living_snake(state, state["you_id"])
+    if you is None:
+        return LOSS_SCORE
+
+    my_body = _snake_body(you)
+    my_head = my_body[0]
+    my_dist = _time_aware_dist(my_head, state, deadline)
+    enemies = _enemy_snakes(state)
+    enemy_dists = [(_snake_id(enemy), len(_snake_body(enemy)), _time_aware_dist(_snake_body(enemy)[0], state, deadline)) for enemy in enemies]
+
+    territory = 0.0
+    strongest_enemy_space = 0
+    for _enemy_id, _enemy_length, enemy_dist in enemy_dists:
+        strongest_enemy_space = max(strongest_enemy_space, len(enemy_dist))
+
+    for x in range(state["width"]):
+        for y in range(state["height"]):
+            point = (x, y)
+            my_arrival = my_dist.get(point, _BIG)
+            enemy_arrivals = [(dist.get(point, _BIG), length) for _enemy_id, length, dist in enemy_dists]
+            if not enemy_arrivals:
+                if my_arrival < _BIG:
+                    territory += 1.0
+                continue
+            enemy_arrival = min(arrival for arrival, _length in enemy_arrivals)
+            if my_arrival < enemy_arrival:
+                territory += 1.0
+            elif enemy_arrival < my_arrival:
+                territory -= 0.75
+            elif my_arrival < _BIG:
+                max_enemy_length = max(length for arrival, length in enemy_arrivals if arrival == enemy_arrival)
+                territory += 0.25 if len(my_body) > max_enemy_length else -0.25
+
+    exits = _safe_exit_count(state, state["you_id"])
+    tail_reachable = 1.0 if my_body[-1] in my_dist else 0.0
+    health = _snake_health(you)
+    length_advantage = len(my_body) - max((len(_snake_body(enemy)) for enemy in enemies), default=len(my_body))
+
+    food_score = 0.0
+    if state["food"]:
+        food_distances = [my_dist.get(food, _BIG) for food in state["food"]]
+        nearest_food = min(food_distances)
+        if nearest_food < _BIG:
+            food_score += max(0.0, health - nearest_food) * 1.5
+            food_score += max(0.0, HUNGRY_THRESHOLD - health) * 0.8 / max(nearest_food, 1)
+            for food in state["food"]:
+                my_arrival = my_dist.get(food, _BIG)
+                if my_arrival >= _BIG:
+                    continue
+                enemy_arrival = min((dist.get(food, _BIG) for _enemy_id, _length, dist in enemy_dists), default=_BIG)
+                food_score += 12.0 if my_arrival < enemy_arrival else -6.0
+        elif health < HUNGRY_THRESHOLD:
+            food_score -= 75.0
+
+    bottleneck_penalty = 60.0 if exits <= 1 else 0.0
+    model_score = _best_model_score_for_state(state)
+
+    return (
+        len(my_dist) * 3.0
+        + territory * 4.0
+        - strongest_enemy_space * 0.35
+        + exits * 25.0
+        + tail_reachable * 35.0
+        + health * 0.45
+        + food_score
+        + length_advantage * 22.0
+        + model_score * 0.25
+        - bottleneck_penalty
+    )

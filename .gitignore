@@ -7,3 +7,8 @@ venv/
 
 # Local Battlesnake CLI output
 logs/
+evaluation/
+
+# Local evaluation harness artifacts
+tests/
+tools/
