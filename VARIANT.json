@@ -1,14 +1,15 @@
 {
-  "model": "ensemble",
-  "label": "Ensemble",
-  "branch": "feature/hardml-ensemble",
-  "render_service_name": "battlesnake-hardml-ensemble",
+  "model": "svm",
+  "label": "SVM Safe",
+  "branch": "feature/hardml-svm-safe",
+  "render_service_name": "battlesnake-hardml-svm-safe",
   "default_env": {
-    "BATTLE_MODEL": "ensemble"
+    "BATTLE_MODEL": "svm"
   },
   "appearance": {
-    "color": "#EC4899",
-    "head": "fang",
+    "color": "#7C3AED",
+    "head": "evil",
     "tail": "bolt"
-  }
+  },
+  "notes": "Strongest SVM runtime model with final out-of-bounds guard."
 }

@@ -75,7 +75,7 @@ FATAL = -1_000_000.0
 SAFETY_DOMINANCE = 100_000.0
 DEFAULT_TIMEOUT_MS = 500
 DEBUG = os.getenv("BATTLESNAKE_DEBUG", "0") == "1"
-RUNTIME_MODEL = os.getenv("BATTLE_MODEL", "ensemble").lower()
+RUNTIME_MODEL = os.getenv("BATTLE_MODEL", "svm").lower()
 
 
 @dataclass(frozen=True)
@@ -96,15 +96,20 @@ def get_info() -> Dict[str, str]:
     return {
         "apiversion": "1",
         "author": "veni-vidi-vici-gpt",
-        "color": "#EC4899",
-        "head": "fang",
+        "color": "#7C3AED",
+        "head": "evil",
         "tail": "bolt",
         "version": f"2.0.0-hardml-{model_name}",
     }
 
 
 def choose_move(game_state: Dict) -> str:
-    """Return next Battlesnake move. This function must never raise."""
+    """Return next Battlesnake move. This function must never raise.
+
+    Extra production guard: the last line before returning a move always checks
+    board bounds. This prevents accidental `up`/`down`/`left`/`right` that would
+    leave the board even if ML, features, or fallback logic misbehave.
+    """
     started = time.perf_counter()
     try:
         ranked = rank_moves(game_state, model_name=RUNTIME_MODEL)
@@ -118,12 +123,12 @@ def choose_move(game_state: Dict) -> str:
                         for c in ranked
                     )
                 )
-            return ranked[0].move
+            return _guarded_return_move(game_state, ranked[0].move)
     except Exception as exc:  # noqa: BLE001 - timeout/error must not kill us
         if DEBUG:
             print(f"choose_move failed: {exc!r}")
 
-    return fallback_move(game_state)
+    return _guarded_return_move(game_state, fallback_move(game_state))
 
 
 def rank_moves(game_state: Dict, model_name: str = "ensemble") -> List[Candidate]:
@@ -437,20 +442,20 @@ def _mlp_score(features: Sequence[float], weights: Dict) -> float:
 
 
 def fallback_move(game_state: Dict) -> str:
-    """Four-layer backup: expert -> tail path -> legal -> deterministic default."""
+    """Four-layer backup: expert -> tail path -> legal -> in-bounds default."""
     try:
         ranked = rank_moves(game_state, "expert")
         if ranked:
-            return ranked[0].move
+            return _guarded_return_move(game_state, ranked[0].move)
     except Exception:
         pass
     move = _tail_chase_fallback(game_state)
     if move:
-        return move
+        return _guarded_return_move(game_state, move)
     move = _basic_legal_fallback(game_state)
     if move:
-        return move
-    return "up"
+        return _guarded_return_move(game_state, move)
+    return _last_resort_in_bounds_move(game_state)
 
 
 def _tail_chase_fallback(game_state: Dict) -> Optional[str]:
@@ -481,6 +486,73 @@ def _basic_legal_fallback(game_state: Dict) -> Optional[str]:
             if area > best_area:
                 best_move, best_area = move, area
     return best_move
+
+
+# ----------------------------- return guard -----------------------------
+
+def _guarded_return_move(game_state: Dict, requested_move: Optional[str]) -> str:
+    """Never return an out-of-bounds move.
+
+    Priority:
+    1) return requested_move if it is in bounds and not immediately occupied;
+    2) choose another in-bounds non-occupied move with max flood-fill space;
+    3) if every in-bounds move is occupied, still return an in-bounds move.
+
+    The third level cannot guarantee survival, but it prevents the specific
+    Battlesnake death reason `out of bounds`.
+    """
+    if requested_move and _is_safe_immediate_move(game_state, requested_move):
+        return requested_move
+    repaired = _basic_legal_fallback(game_state)
+    if repaired and _move_in_bounds(game_state, repaired):
+        return repaired
+    return _last_resort_in_bounds_move(game_state)
+
+
+def _is_safe_immediate_move(game_state: Dict, move: str) -> bool:
+    if not _move_in_bounds(game_state, move):
+        return False
+    board = game_state.get("board", {})
+    you = game_state.get("you", {})
+    head = _head(you)
+    dx, dy = DIRECTIONS[move]
+    nxt = (head[0] + dx, head[1] + dy)
+    blocked = _blocked_for_entry(board.get("snakes", []), you.get("id"), nxt, _foods(board))
+    return nxt not in blocked
+
+
+def _move_in_bounds(game_state: Dict, move: Optional[str]) -> bool:
+    if move not in DIRECTIONS:
+        return False
+    board = game_state.get("board", {})
+    you = game_state.get("you", {})
+    width, height = int(board.get("width", 11)), int(board.get("height", 11))
+    head = _head(you)
+    dx, dy = DIRECTIONS[move]
+    return _in_bounds((head[0] + dx, head[1] + dy), width, height)
+
+
+def _last_resort_in_bounds_move(game_state: Dict) -> str:
+    """Return any direction that stays on the board; never blindly return 'up'."""
+    board = game_state.get("board", {})
+    you = game_state.get("you", {})
+    width, height = int(board.get("width", 11)), int(board.get("height", 11))
+    head = _head(you)
+
+    # Prefer stable order toward the board center, then deterministic move order.
+    center = ((width - 1) / 2.0, (height - 1) / 2.0)
+    choices: List[Tuple[float, str]] = []
+    for move, (dx, dy) in DIRECTIONS.items():
+        nxt = (head[0] + dx, head[1] + dy)
+        if _in_bounds(nxt, width, height):
+            dist_to_center = abs(nxt[0] - center[0]) + abs(nxt[1] - center[1])
+            choices.append((dist_to_center, move))
+    if choices:
+        choices.sort()
+        return choices[0][1]
+
+    # Malformed board with no valid coordinates. Keep API-valid response.
+    return "up"
 
 
 # ----------------------------- board helpers -----------------------------

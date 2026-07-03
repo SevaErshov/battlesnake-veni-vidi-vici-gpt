@@ -1,20 +1,14 @@
-# Как залить этот вариант в отдельную ветку
+# Заливка в отдельную ветку
 
-Из корня вашего fork-репозитория:
+Рекомендуемая ветка: `feature/hardml-svm-safe`.
 
 ```powershell
 git checkout main
 git pull origin main
-git checkout -b feature/hardml-ensemble
-
-# затем скопируй файлы из этой папки в корень репозитория с заменой backend.py/logic.py/render.yaml и т.д.
-
-git add .
-git commit -m "Add HardML Ensemble Battlesnake"
-git push origin feature/hardml-ensemble
+git checkout -b feature/hardml-svm-safe
 ```
 
-Локальная проверка:
+Скопируй содержимое этой папки в корень форка с заменой файлов, затем:
 
 ```powershell
 python -m venv .venv
@@ -24,4 +18,10 @@ python smoke_test.py
 python backend.py
 ```
 
-Модель по умолчанию: `ensemble`.
+Если smoke-test прошел, пушим:
+
+```powershell
+git add .
+git commit -m "Add HardML SVM Safe Battlesnake"
+git push origin feature/hardml-svm-safe
+```
