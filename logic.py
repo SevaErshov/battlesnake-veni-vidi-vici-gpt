@@ -36,10 +36,10 @@ HEAD_TO_HEAD_PENALTY = 10_000
 # Below this health we start actively steering toward food.
 HUNGRY_THRESHOLD = 50
 
-MAX_SEARCH_DEPTH = 4
-SEARCH_MAX_BUDGET_SECONDS = 0.35
-SEARCH_TIMEOUT_RESERVE_SECONDS = 0.15
-SEARCH_TIMEOUT_FRACTION = 0.65
+MAX_SEARCH_DEPTH = 3
+SEARCH_MAX_BUDGET_SECONDS = 0.21
+SEARCH_TIMEOUT_RESERVE_SECONDS = 0.28
+SEARCH_TIMEOUT_FRACTION = 0.42
 STANDARD_FOOD_HEALTH = 100
 WIN_SCORE = 1_000_000.0
 LOSS_SCORE = -1_000_000.0
@@ -1064,8 +1064,6 @@ def _evaluate_leaf(state: Dict[str, object], deadline: float) -> float:
             food_score -= 75.0
 
     bottleneck_penalty = 60.0 if exits <= 1 else 0.0
-    model_score = _best_model_score_for_state(state)
-
     return (
         len(my_dist) * 3.0
         + territory * 4.0
@@ -1075,6 +1073,5 @@ def _evaluate_leaf(state: Dict[str, object], deadline: float) -> float:
         + health * 0.45
         + food_score
         + length_advantage * 22.0
-        + model_score * 0.25
         - bottleneck_penalty
     )
