@@ -37,9 +37,9 @@ HEAD_TO_HEAD_PENALTY = 10_000
 HUNGRY_THRESHOLD = 50
 
 MAX_SEARCH_DEPTH = 3
-SEARCH_MAX_BUDGET_SECONDS = 0.21
-SEARCH_TIMEOUT_RESERVE_SECONDS = 0.28
-SEARCH_TIMEOUT_FRACTION = 0.42
+SEARCH_MAX_BUDGET_SECONDS = 0.18
+SEARCH_TIMEOUT_RESERVE_SECONDS = 0.31
+SEARCH_TIMEOUT_FRACTION = 0.36
 STANDARD_FOOD_HEALTH = 100
 WIN_SCORE = 1_000_000.0
 LOSS_SCORE = -1_000_000.0
@@ -669,6 +669,55 @@ def _model_score_for_state_move(state: Dict[str, object], snake_id: str, move: s
         return 0.0
 
 
+def _fast_move_order_score(state: Dict[str, object], snake_id: str, move: str, classification: str) -> float:
+    """Cheap tactical score for search ordering.
+
+    The embedded model is still used for the request baseline. Inside search,
+    this avoids repeatedly rebuilding JSON states and running feature BFS for
+    every simulated snake move.
+    """
+    snake = _living_snake(state, snake_id)
+    if snake is None or move not in DIRECTIONS:
+        return -_BIG
+    body = _snake_body(snake)
+    nxt = _move_point(body[0], move)
+    if classification == "impossible":
+        return -_BIG
+
+    width = state["width"]
+    height = state["height"]
+    occupied = _body_cells_after_tail_release(state)
+    escape = sum(
+        1
+        for dx, dy in _NEIGHBORS
+        if _in_bounds((nxt[0] + dx, nxt[1] + dy), width, height)
+        and (nxt[0] + dx, nxt[1] + dy) not in occupied
+    )
+    wall_dist = min(nxt[0], width - 1 - nxt[0], nxt[1], height - 1 - nxt[1])
+    health = _snake_health(snake)
+    foods = state["food"]
+
+    score = escape * 28.0 + wall_dist * 5.0
+    if classification == "dangerous":
+        score -= 220.0
+    elif classification in {"fatal_body", "fatal_starvation"}:
+        score -= 5_000.0
+
+    if nxt in foods:
+        score += 95.0 + max(0, HUNGRY_THRESHOLD - health) * 2.0
+    elif foods and health < 80:
+        nearest_next = min(_manhattan(nxt, food) for food in foods)
+        score += max(0, width + height - nearest_next) * (1.0 + max(0, 60 - health) / 30.0)
+
+    enemies = _enemy_snakes(state)
+    if enemies:
+        my_length = len(body) + (1 if nxt in foods else 0)
+        shorter_nearby = sum(1 for enemy in enemies if len(_snake_body(enemy)) < my_length and _manhattan(nxt, _snake_body(enemy)[0]) <= 1)
+        score += shorter_nearby * 35.0
+
+    return score
+
+
 def _ordered_moves_for_snake(
     state: Dict[str, object],
     snake_id: str,
@@ -684,7 +733,7 @@ def _ordered_moves_for_snake(
     records = []
     for index, move in enumerate(VALID_MOVES):
         classification = _classify_move_for_snake(state, snake_id, move)
-        model_score = _model_score_for_state_move(state, snake_id, move)
+        model_score = _fast_move_order_score(state, snake_id, move, classification)
         if move == baseline:
             model_score += 0.001
         records.append(
@@ -713,15 +762,16 @@ def _simulate_turn(state: Dict[str, object], moves: Dict[str, str]) -> Dict[str,
     for sid, body, health in state["snakes"]:
         move = _valid_direction(moves.get(sid))
         new_head = _move_point(body[0], move)
-        new_body = (new_head,) + body[:-1]
+        if new_head in food:
+            new_body = (new_head,) + body
+        else:
+            new_body = (new_head,) + body[:-1]
         moved.append((sid, new_body, health - 1))
 
     eaten: Set[Point] = set()
     grown: List[Tuple[str, Tuple[Point, ...], int]] = []
     for sid, body, health in moved:
         if body[0] in food:
-            tail = body[-1]
-            body = body + (tail,)
             health = STANDARD_FOOD_HEALTH
             eaten.add(body[0])
         grown.append((sid, body, health))
@@ -960,9 +1010,15 @@ def _release_times(state: Dict[str, object]) -> Dict[Point, int]:
     return release
 
 
-def _time_aware_dist(start: Point, state: Dict[str, object], deadline: float) -> Dict[Point, int]:
+def _time_aware_dist(
+    start: Point,
+    state: Dict[str, object],
+    deadline: float,
+    release: Optional[Dict[Point, int]] = None,
+) -> Dict[Point, int]:
     width, height = state["width"], state["height"]
-    release = _release_times(state)
+    if release is None:
+        release = _release_times(state)
     dist = {start: 0}
     dq = deque([start])
     checks = 0
@@ -1015,9 +1071,13 @@ def _evaluate_leaf(state: Dict[str, object], deadline: float) -> float:
 
     my_body = _snake_body(you)
     my_head = my_body[0]
-    my_dist = _time_aware_dist(my_head, state, deadline)
+    release = _release_times(state)
+    my_dist = _time_aware_dist(my_head, state, deadline, release)
     enemies = _enemy_snakes(state)
-    enemy_dists = [(_snake_id(enemy), len(_snake_body(enemy)), _time_aware_dist(_snake_body(enemy)[0], state, deadline)) for enemy in enemies]
+    enemy_dists = [
+        (_snake_id(enemy), len(_snake_body(enemy)), _time_aware_dist(_snake_body(enemy)[0], state, deadline, release))
+        for enemy in enemies
+    ]
 
     territory = 0.0
     strongest_enemy_space = 0
