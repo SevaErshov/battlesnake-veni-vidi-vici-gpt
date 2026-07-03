@@ -75,7 +75,7 @@ FATAL = -1_000_000.0
 SAFETY_DOMINANCE = 100_000.0
 DEFAULT_TIMEOUT_MS = 500
 DEBUG = os.getenv("BATTLESNAKE_DEBUG", "0") == "1"
-RUNTIME_MODEL = os.getenv("BATTLE_MODEL", "expert").lower()
+RUNTIME_MODEL = os.getenv("BATTLE_MODEL", "ensemble").lower()
 
 
 @dataclass(frozen=True)
@@ -96,9 +96,9 @@ def get_info() -> Dict[str, str]:
     return {
         "apiversion": "1",
         "author": "veni-vidi-vici-gpt",
-        "color": "#111827",
-        "head": "evil",
-        "tail": "fat-rattle",
+        "color": "#EC4899",
+        "head": "fang",
+        "tail": "bolt",
         "version": f"2.0.0-hardml-{model_name}",
     }
 

@@ -5,13 +5,13 @@
 ```powershell
 git checkout main
 git pull origin main
-git checkout -b feature/expert-safety
+git checkout -b feature/hardml-ensemble
 
 # затем скопируй файлы из этой папки в корень репозитория с заменой backend.py/logic.py/render.yaml и т.д.
 
 git add .
-git commit -m "Add HardML Expert Battlesnake"
-git push origin feature/expert-safety
+git commit -m "Add HardML Ensemble Battlesnake"
+git push origin feature/hardml-ensemble
 ```
 
 Локальная проверка:
@@ -24,4 +24,4 @@ python smoke_test.py
 python backend.py
 ```
 
-Модель по умолчанию: `expert`.
+Модель по умолчанию: `ensemble`.

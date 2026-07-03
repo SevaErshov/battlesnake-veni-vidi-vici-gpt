@@ -1,14 +1,14 @@
 {
-  "model": "expert",
-  "label": "Expert",
-  "branch": "feature/expert-safety",
-  "render_service_name": "battlesnake-hardml-expert",
+  "model": "ensemble",
+  "label": "Ensemble",
+  "branch": "feature/hardml-ensemble",
+  "render_service_name": "battlesnake-hardml-ensemble",
   "default_env": {
-    "BATTLE_MODEL": "expert"
+    "BATTLE_MODEL": "ensemble"
   },
   "appearance": {
-    "color": "#111827",
-    "head": "evil",
-    "tail": "fat-rattle"
+    "color": "#EC4899",
+    "head": "fang",
+    "tail": "bolt"
   }
 }
