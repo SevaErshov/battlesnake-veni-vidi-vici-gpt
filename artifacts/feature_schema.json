@@ -1,0 +1,24 @@
+{
+  "policy": [
+    "candidate_move",
+    "open_space_after_move",
+    "distance_to_nearest_food",
+    "health_after_move",
+    "is_food",
+    "wall_distance",
+    "distance_to_center",
+    "enemy_count",
+    "length_advantage",
+    "safe_moves_next_turn"
+  ],
+  "value": [
+    "health",
+    "length",
+    "length_advantage",
+    "enemy_count",
+    "turn",
+    "food_distance",
+    "safe_moves",
+    "has_immediate_threat"
+  ]
+}

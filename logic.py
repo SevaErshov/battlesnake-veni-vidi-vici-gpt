@@ -1,57 +1,17 @@
-"""Model-backed move-selection logic for the Battlesnake.
+"""Thin HTTP adapter for the Battlesnake service."""
 
-The served policy uses a linear ranking model, scores each legal move,
-and returns the highest-scoring direction. A compact heuristic remains as a
-fallback so gameplay still returns a legal move if model scoring fails.
+from typing import Dict
 
-Board coordinates: ``(0, 0)`` is the bottom-left corner.
-  up    -> y + 1
-  down  -> y - 1
-  left  -> x - 1
-  right -> x + 1
-
-Game-state schema reference: https://docs.battlesnake.com/api
-"""
-
-from collections import deque
-from typing import Dict, List, Optional, Set, Tuple
-
-Point = Tuple[int, int]
-
-DIRECTIONS: Dict[str, Point] = {
-    "up": (0, 1),
-    "down": (0, -1),
-    "left": (-1, 0),
-    "right": (1, 0),
-}
-
-# Penalty applied to a move that could lose a head-to-head collision.
-HEAD_TO_HEAD_PENALTY = 10_000
-# Below this health we start actively steering toward food.
-HUNGRY_THRESHOLD = 50
-
-
-def get_info() -> Dict[str, str]:
-    """Appearance + metadata returned from ``GET /``."""
-    return {
-        "apiversion": "1",
-        "author": "hackathon",
-        "color": "#6434eb",
-        "head": "smart-caterpillar",
-        "tail": "weight",
-        "version": "0.1.0",
-    }
+from src.baseline import choose_move as baseline_choose_move, get_info
+from src.strategy import choose_move as hybrid_choose_move
 
 
 def choose_move(game_state: Dict) -> str:
-    """Return the next move using the model, with a heuristic fallback."""
+    fallback_move = baseline_choose_move(game_state)
     try:
-        move = choose_move_model(game_state)
-    except Exception:  # noqa: BLE001 - a model issue must never break gameplay
-        move = None
-    if move is not None:
-        return move
-    return choose_move_heuristic(game_state)
+        return hybrid_choose_move(game_state=game_state, fallback_move=fallback_move)
+    except Exception:
+        return fallback_move
 
 
 def choose_move_heuristic(game_state: Dict) -> str:

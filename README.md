@@ -1,26 +1,42 @@
-# Battlesnake ML Inference Bot
+# Battlesnake Hybrid ML Search
 
-A [Battlesnake](https://play.battlesnake.com) written in Python and Flask. This
-version uses a pretrained model checkpoint to choose moves.
+Hybrid Battlesnake solution combining safety filters, simulation, search,
+and ML-guided policy/value ranking.
 
-## What It Does
+## Architecture
 
-Each turn, `logic.py`:
+flowchart TD
+    A[Game State] --> B[Hard Safety]
+    B --> C[Policy Model]
+    C --> D[Simulator and Search]
+    D --> E[Value Model]
+    E --> F[Best Move]
+    F --> G[Response]
+    D -. error or deadline .-> H[Baseline Fallback]
 
-- Gets legal moves for the current board.
-- Calculates per-move features.
-- Scores each move with a pure-Python linear model.
-- Returns the highest-scoring move.
+## What Changed
 
+This branch preserves the original baseline as a fallback and introduces:
 
-## Files
+- Typed `GameState`, `SnakeState`, and `Point` models.
+- Hard safety rules for legal and safe move filtering.
+- Deterministic turn simulator for simultaneous snake actions.
+- Policy and value feature builders with shared schema.
+- Model registry loading CatBoost artifacts once at startup.
+- Minimax/expectimax search guided by ML rankings and safety.
+- Benchmark and training pipeline scaffolding.
 
-- `backend.py` — Battlesnake HTTP server with `/`, `/start`, `/move`, and `/end`.
-- `logic.py` — embedded checkpoint, feature extraction, move scoring, and fallback logic.
-- `requirements.txt` — runtime dependencies.
-- `render.yaml` — Render deployment config.
+## Project Structure
 
-## Run Locally
+- `backend.py` — Flask server exposing Battlesnake endpoints.
+- `logic.py` — thin adapter preserving public HTTP contract.
+- `src/` — core game engine: state, safety, simulator, features, models, search, strategy.
+- `training/` — pipeline scripts for game generation and model training.
+- `benchmark/` — duel runner and smoke test utilities.
+- `artifacts/` — feature schema and model metadata.
+- `tests/` — pytest unit tests.
+
+## Local Run
 
 ```bash
 python3 -m venv .venv
@@ -28,30 +44,53 @@ python3 -m venv .venv
 .venv/bin/python backend.py
 ```
 
-Test your battlesnake with the Battlesnake CLI:
+Open `http://localhost:8000/` to verify the snake metadata response.
+
+## Tests
 
 ```bash
-battlesnake play -W 11 -H 11 \
-  -n ml -u http://localhost:8000 \
-  -g solo \
-  -v -c -d 300
+/usr/local/bin/python3 -m pytest -q
 ```
 
-## Deploy to Render
+## Training and Data Generation
 
-1. Push this repo to GitHub.
-2. In the [Render dashboard](https://dashboard.render.com): **New -> Blueprint**,
-   connect the repo. Render reads `render.yaml` and provisions a free web
-   service running `gunicorn backend:app`.
-   - Or **New -> Web Service** manually with build command
-     `pip install -r requirements.txt` and start command
-     `gunicorn backend:app --bind 0.0.0.0:$PORT`.
-3. Wait for the deploy to go live. Note the public URL, e.g.
-   `https://battlesnake-xxxx.onrender.com`.
-4. Visit that URL in a browser — you should see the appearance JSON.
+The scaffolded pipeline is present, but full dataset generation and model
+training are not yet completed.
 
-## Register on Battlesnake
+```bash
+python -m training.generate_games --games 100 --seed 42 --output data/trajectories.jsonl
+python -m training.build_datasets --output data/dataset.csv
+python -m training.train_policy --output artifacts/policy_model.cbm
+python -m training.train_value --output artifacts/value_model.cbm
+```
 
-1. Create an account at [play.battlesnake.com](https://play.battlesnake.com).
-2. **Create Battlesnake** -> paste your Render URL as the server URL.
-3. Now you can use it in a game!
+## Benchmark
+
+```bash
+python -m benchmark.run_duels --games 200 --seed 10000 --swap-positions --output benchmark/results.json
+```
+
+## Environment Variables
+
+- `SEARCH_BUDGET_MS` — internal search budget in milliseconds (default: `250`).
+- `SEARCH_MAX_DEPTH` — search depth for minimax/expectimax (default: `3`).
+- `SEARCH_BEAM_WIDTH` — beam width for multiplicative opponent pruning (default: `4`).
+
+## Fallback
+
+If ML inference, search, or simulation fails, the system logs the failure and
+returns the preserved baseline move.
+
+## Render Deployment
+
+Render uses `render.yaml`:
+
+- `buildCommand`: `pip install -r requirements.txt`
+- `startCommand`: `gunicorn backend:app --bind 0.0.0.0:$PORT`
+
+## Current Limitations
+
+- Training pipeline is scaffolded, not fully implemented.
+- Benchmark runner has placeholder hooks for state initialization.
+- No model artifacts are included yet.
+- Search is limited to shallow depths to avoid timeouts.
