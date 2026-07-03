@@ -70,6 +70,17 @@ class LogicTests(unittest.TestCase):
 
         self.assertNotEqual(choose_move(game_state), "right")
 
+    def test_avoids_contested_food_that_would_tie_after_growth(self):
+        game_state = state(
+            [(1, 1), (1, 0), (0, 0)],
+            enemies=[[(3, 1), (3, 0), (4, 0)]],
+            food=[(2, 1)],
+            width=7,
+            height=7,
+        )
+
+        self.assertNotEqual(choose_move(game_state), "right")
+
     def test_allows_following_own_tail_when_it_vacates(self):
         game_state = state(
             [(1, 1), (1, 2), (0, 2), (0, 1), (0, 0), (1, 0)],

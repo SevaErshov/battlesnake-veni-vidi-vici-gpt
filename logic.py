@@ -256,12 +256,14 @@ def _head_to_head_status(board: Dict, you: Dict, target: Point, next_length: int
     """Return ``(risk, kill_opportunity)`` for a target cell."""
     risk = False
     kill = False
+    food = {_point(item) for item in board.get("food", [])}
     for snake in board["snakes"]:
         if snake["id"] == you["id"]:
             continue
         if target not in _legal_enemy_targets(board, snake):
             continue
-        if snake["length"] >= next_length:
+        enemy_next_length = snake["length"] + (1 if target in food else 0)
+        if enemy_next_length >= next_length:
             risk = True
         else:
             kill = True
