@@ -10,3 +10,6 @@ logs/
 
 # Generated training data
 data/
+benchmark/*results*.json
+benchmark/*.jsonl
+artifacts/*.cbm
