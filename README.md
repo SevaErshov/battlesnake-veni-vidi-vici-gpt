@@ -1,22 +1,27 @@
-# Battlesnake ML Inference Bot
+# Battlesnake Tournament Bot
 
 A [Battlesnake](https://play.battlesnake.com) written in Python and Flask. This
-version uses a pretrained model checkpoint to choose moves.
+version uses a deterministic, survival-first heuristic tuned for multiplayer
+tournament games.
 
 ## What It Does
 
 Each turn, `logic.py`:
 
-- Gets legal moves for the current board.
-- Calculates per-move features.
-- Scores each move with a pure-Python linear model.
+- Scores all four directions against walls, bodies, and likely head-to-head
+  collisions.
+- Simulates our next body position, including tail movement and food growth.
+- Uses flood fill, tail reachability, and Voronoi-style board control to avoid
+  self-trapping.
+- Becomes more aggressive about food as health drops, while avoiding risky food
+  races against equal or longer snakes.
 - Returns the highest-scoring move.
 
 
 ## Files
 
 - `backend.py` — Battlesnake HTTP server with `/`, `/start`, `/move`, and `/end`.
-- `logic.py` — embedded checkpoint, feature extraction, move scoring, and fallback logic.
+- `logic.py` — tournament move scoring and board-safety helpers.
 - `requirements.txt` — runtime dependencies.
 - `render.yaml` — Render deployment config.
 
@@ -32,7 +37,7 @@ Test your battlesnake with the Battlesnake CLI:
 
 ```bash
 battlesnake play -W 11 -H 11 \
-  -n ml -u http://localhost:8000 \
+  -n tournament -u http://localhost:8000 \
   -g solo \
   -v -c -d 300
 ```
